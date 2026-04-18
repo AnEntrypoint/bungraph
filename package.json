@@ -1,6 +1,6 @@
 {
   "name": "bundag",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Turnkey temporal context graph (Graphiti port) on libsql with ACP-backed LLM. bunx-ready.",
   "type": "module",
   "bin": {

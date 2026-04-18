@@ -92,6 +92,9 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS entity_edge_source ON entity_edge(source_node_uuid)`,
   `CREATE INDEX IF NOT EXISTS entity_edge_target ON entity_edge(target_node_uuid)`,
   `CREATE INDEX IF NOT EXISTS entity_edge_vec ON entity_edge(libsql_vector_idx(fact_embedding))`,
+  `CREATE INDEX IF NOT EXISTS entity_edge_active ON entity_edge(group_id, source_node_uuid, name) WHERE expired_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS entity_edge_active_target ON entity_edge(group_id, target_node_uuid, name) WHERE expired_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS entity_edge_temporal ON entity_edge(group_id, source_node_uuid, name, valid_at, expired_at)`,
 
   `CREATE TABLE IF NOT EXISTS episodic_edge (
     uuid TEXT PRIMARY KEY,
@@ -116,10 +119,22 @@ const SCHEMA = [
   `CREATE VIRTUAL TABLE IF NOT EXISTS episodic_node_fts USING fts5(uuid UNINDEXED, name, content, tokenize='porter unicode61')`,
 ];
 
+const PRAGMAS = [
+  `PRAGMA journal_mode = WAL`,
+  `PRAGMA synchronous = NORMAL`,
+  `PRAGMA temp_store = MEMORY`,
+  `PRAGMA mmap_size = 268435456`,
+  `PRAGMA cache_size = -65536`,
+  `PRAGMA busy_timeout = 5000`,
+  `PRAGMA foreign_keys = ON`,
+];
+
 export async function initStore(dbPath) {
   if (dbPath && !existsSync(dirname(dbPath))) mkdirSync(dirname(dbPath), { recursive: true });
   db = createClient({ url: `file:${dbPath}` });
+  for (const p of PRAGMAS) { try { await db.execute(p); } catch {} }
   for (const q of SCHEMA) await db.execute(q);
+  try { await db.execute(`PRAGMA optimize`); } catch {}
   return db;
 }
 

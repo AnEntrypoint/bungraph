@@ -23,9 +23,10 @@
     "test": "node test.js"
   },
   "dependencies": {
-    "@libsql/client": "^0.15.0",
     "@huggingface/transformers": "^3.8.1",
+    "@libsql/client": "^0.15.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "lru-cache": "^11.0.0",
     "onnxruntime-node": "^1.23.2",
     "onnxruntime-web": "^1.19.0",
     "uuid": "^10.0.0",

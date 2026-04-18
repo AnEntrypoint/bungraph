@@ -1,79 +1,96 @@
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
+import { existsSync } from 'fs';
+
+export class LLMError extends Error { constructor(msg, cause) { super(msg); this.name = this.constructor.name; this.cause = cause; } }
+export class LLMTransientError extends LLMError {}
+export class LLMTimeoutError extends LLMTransientError {}
+export class LLMProcessError extends LLMError {}
+export class LLMValidationError extends LLMError {}
+
+export function isTransient(e) { return e instanceof LLMTransientError; }
 
 let clientSingleton = null;
+let resolvedBin = null;
+
+function scrubEnv() {
+  const out = {};
+  const keep = ['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'ComSpec', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'];
+  for (const k of keep) if (process.env[k] !== undefined) out[k] = process.env[k];
+  return out;
+}
 
 function resolveClaudeBin() {
-  // Prefer env override, fall back to PATH `claude`.
-  return process.env.BUNGRAPH_CLAUDE_BIN || 'claude';
+  if (resolvedBin) return resolvedBin;
+  const override = process.env.BUNGRAPH_CLAUDE_BIN;
+  if (override) {
+    if (!existsSync(override)) throw new LLMProcessError(`BUNGRAPH_CLAUDE_BIN set to ${override} but file does not exist`);
+    resolvedBin = override;
+    return resolvedBin;
+  }
+  const cmd = process.platform === 'win32' ? 'where' : 'which';
+  const r = spawnSync(cmd, ['claude'], { encoding: 'utf8', shell: false });
+  if (r.status === 0 && r.stdout) {
+    const first = r.stdout.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (first && existsSync(first)) { resolvedBin = first; return resolvedBin; }
+  }
+  resolvedBin = 'claude';
+  return resolvedBin;
 }
 
 export class LLMClient {
-  constructor() {
-    this.bin = resolveClaudeBin();
-  }
+  constructor() { this.bin = resolveClaudeBin(); }
 
-  async generate(system, user, { maxAttempts = 3, timeoutMs = 120000 } = {}) {
+  async generate(system, user, { maxAttempts = 3, timeoutMs = 60000 } = {}) {
     const fullPrompt = system
       ? `${system}\n\n---\n\n${user}\n\nRespond with ONLY a JSON object. No preamble. No code fence.`
       : `${user}\n\nRespond with ONLY a JSON object. No preamble. No code fence.`;
 
+    let lastErr;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const text = await this.callClaude(fullPrompt, timeoutMs);
-      if (process.env.BUNGRAPH_DEBUG_LLM) {
-        process.stderr.write('[bungraph] LLM raw: ' + text.slice(0, 500) + '\n');
+      try {
+        const text = await this.callClaude(fullPrompt, timeoutMs);
+        if (process.env.BUNGRAPH_DEBUG_LLM) process.stderr.write('[bungraph] LLM raw: ' + text.slice(0, 500) + '\n');
+        const parsed = this.parseJson(text);
+        if (parsed) return parsed;
+        lastErr = new LLMValidationError(`LLM returned non-JSON (len=${text.length})`);
+        process.stderr.write(`[bungraph] ${lastErr.message}, retrying ${attempt + 1}/${maxAttempts}...\n`);
+      } catch (e) {
+        lastErr = e;
+        if (!isTransient(e)) throw e;
+        process.stderr.write(`[bungraph] LLM transient error (${e.name}): ${e.message}, retrying ${attempt + 1}/${maxAttempts}...\n`);
       }
-      const parsed = this.parseJson(text);
-      if (parsed) return parsed;
-      process.stderr.write(`[bungraph] LLM returned non-JSON (len=${text.length}), retrying ${attempt + 1}/${maxAttempts}...\n`);
     }
-    throw new Error('LLM failed to return JSON after retries');
+    throw lastErr || new LLMValidationError('LLM failed to return JSON after retries');
   }
 
   callClaude(prompt, timeoutMs) {
     return new Promise((resolve, reject) => {
-      const args = [
-        '-p',
-        '--output-format', 'json',
-        '--no-session-persistence',
-        '--disable-slash-commands',
-        '--permission-mode', 'bypassPermissions',
-      ];
-      // Pass prompt via stdin to avoid shell-escaping issues for long multi-line prompts.
-      const proc = spawn(this.bin, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: process.env,
-        shell: false,
-      });
+      const args = ['-p', '--output-format', 'json', '--no-session-persistence', '--disable-slash-commands', '--permission-mode', 'bypassPermissions'];
+      const ctrl = new AbortController();
+      const proc = spawn(this.bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: scrubEnv(), shell: false, signal: ctrl.signal });
 
-      let stdout = '';
-      let stderr = '';
-      let finished = false;
-
+      let stdout = '', stderr = '', finished = false;
       const timer = setTimeout(() => {
-        if (!finished) {
-          finished = true;
-          try { proc.kill(); } catch {}
-          reject(new Error(`claude -p timed out after ${timeoutMs}ms. stderr: ${stderr.slice(0, 500)}`));
-        }
+        if (finished) return;
+        finished = true;
+        try { ctrl.abort(); } catch {}
+        try { proc.kill('SIGKILL'); } catch {}
+        reject(new LLMTimeoutError(`claude -p timed out after ${timeoutMs}ms. stderr: ${stderr.slice(0, 500)}`));
       }, timeoutMs);
 
       proc.on('error', (e) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        if (e.code === 'ENOENT') {
-          reject(new Error(`Claude CLI not found on PATH. Install Claude Code: https://claude.com/claude-code. Set BUNGRAPH_CLAUDE_BIN to override the binary path.`));
-        } else {
-          reject(e);
-        }
+        if (e.code === 'ENOENT') reject(new LLMProcessError(`Claude CLI not found. Install: https://claude.com/claude-code. Set BUNGRAPH_CLAUDE_BIN to override.`, e));
+        else if (e.name === 'AbortError') reject(new LLMTimeoutError(`claude -p aborted`, e));
+        else reject(new LLMProcessError(e.message, e));
       });
 
-      proc.stdout.on('data', (d) => { stdout += d.toString(); });
-      proc.stderr.on('data', (d) => {
+      proc.stdout.on('data', d => { stdout += d.toString(); });
+      proc.stderr.on('data', d => {
         stderr += d.toString();
-        if (process.env.BUNGRAPH_DEBUG_CLAUDE) {
-          process.stderr.write('[claude] ' + d.toString());
-        }
+        if (process.env.BUNGRAPH_DEBUG_CLAUDE) process.stderr.write('[claude] ' + d.toString());
       });
 
       proc.on('close', (code) => {
@@ -81,18 +98,21 @@ export class LLMClient {
         finished = true;
         clearTimeout(timer);
         if (code !== 0) {
-          reject(new Error(`claude -p exited with code ${code}. stderr: ${stderr.slice(0, 500)}`));
+          const msg = `claude -p exited ${code}. stderr: ${stderr.slice(0, 500)}`;
+          const transient = code === 1 && /rate|overload|timeout|network|ECONNRESET|ETIMEDOUT/i.test(stderr);
+          reject(transient ? new LLMTransientError(msg) : new LLMProcessError(msg));
           return;
         }
         try {
           const parsed = JSON.parse(stdout);
           if (parsed.is_error) {
-            reject(new Error(`Claude error: ${parsed.result || parsed.api_error_status || 'unknown'}`));
+            const err = String(parsed.result || parsed.api_error_status || 'unknown');
+            const transient = /rate|overload|529|503|timeout/i.test(err);
+            reject(transient ? new LLMTransientError(`Claude error: ${err}`) : new LLMProcessError(`Claude error: ${err}`));
             return;
           }
           resolve(parsed.result || '');
-        } catch (e) {
-          // Not JSON envelope — return raw
+        } catch {
           resolve(stdout);
         }
       });
@@ -125,9 +145,7 @@ export class LLMClient {
     try { return JSON.parse(t.slice(start, end + 1)); } catch { return null; }
   }
 
-  async close() {
-    // nothing persistent to clean up
-  }
+  async close() {}
 }
 
 export function getLLM() {

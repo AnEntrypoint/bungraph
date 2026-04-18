@@ -14,27 +14,77 @@ async function ensure(dbPath) {
   return g;
 }
 
+const GROUP = { type: 'string', description: 'Tenant/group identifier; scopes the operation to a single group. Omit for default group.' };
+const AS_OF = { type: 'string', description: 'ISO-8601 timestamp; return state valid at this time (bi-temporal as_of). Omit for current.' };
+const LIMIT = { type: 'number', description: 'Maximum results to return.' };
+const UUID = { type: 'string', description: 'UUID of the target record.' };
+
+const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const idemp = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const destroy = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+
 const tools = [
-  { name: 'add_episode', description: 'Add an episode to the temporal context graph. Extracts entities + facts, dedupes, invalidates contradicted facts.', inputSchema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, name: { type: 'string' }, source: { type: 'string', enum: ['message', 'text', 'json'] }, group_id: { type: 'string' }, source_description: { type: 'string' }, valid_at: { type: 'string' }, saga_uuid: { type: 'string' }, update_communities: { type: 'boolean' } } } },
-  { name: 'add_episode_bulk', description: 'Bulk add episodes with cross-episode dedupe.', inputSchema: { type: 'object', required: ['episodes'], properties: { episodes: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' }, valid_at: { type: 'string' } } } }, group_id: { type: 'string' } } } },
-  { name: 'add_triplet', description: 'Add a source-relation-target triplet directly.', inputSchema: { type: 'object', required: ['sourceName', 'relation', 'targetName'], properties: { sourceName: { type: 'string' }, relation: { type: 'string' }, targetName: { type: 'string' }, fact: { type: 'string' }, group_id: { type: 'string' }, valid_at: { type: 'string' } } } },
-  { name: 'search', description: 'Combined hybrid search over nodes + edges + communities + episodes.', inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, group_id: { type: 'string' }, limit: { type: 'number' }, center_node_uuids: { type: 'array', items: { type: 'string' } }, reranker: { type: 'string', enum: ['rrf', 'mmr', 'node_distance', 'episode_mentions', 'cross_encoder'] } } } },
-  { name: 'search_nodes', description: 'Hybrid search for entity nodes.', inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, group_id: { type: 'string' }, limit: { type: 'number' }, center_node_uuids: { type: 'array' }, reranker: { type: 'string' } } } },
-  { name: 'search_facts', description: 'Hybrid search for entity edges (facts). Excludes expired.', inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, group_id: { type: 'string' }, limit: { type: 'number' }, center_node_uuids: { type: 'array' }, reranker: { type: 'string' } } } },
-  { name: 'search_communities', description: 'Search community summaries.', inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, group_id: { type: 'string' }, limit: { type: 'number' } } } },
-  { name: 'search_episodes', description: 'Search episode content via BM25.', inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, group_id: { type: 'string' }, limit: { type: 'number' } } } },
-  { name: 'get_episodes', description: 'Retrieve most recent episodes.', inputSchema: { type: 'object', properties: { group_id: { type: 'string' }, limit: { type: 'number' }, reference_time: { type: 'string' } } } },
-  { name: 'get_node', description: 'Fetch node by uuid.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'get_edge', description: 'Fetch edge by uuid.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'get_episode', description: 'Fetch episode by uuid with its nodes and edges.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'build_communities', description: 'Run label propagation to build/refresh communities.', inputSchema: { type: 'object', properties: { group_id: { type: 'string' } } } },
-  { name: 'remove_communities', description: 'Delete all communities in a group.', inputSchema: { type: 'object', properties: { group_id: { type: 'string' } } } },
-  { name: 'create_saga', description: 'Create a saga (conversation thread).', inputSchema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, group_id: { type: 'string' }, summary: { type: 'string' } } } },
-  { name: 'summarize_saga', description: 'Summarize a saga from its episodes.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'delete_episode', description: 'Delete an episode by uuid.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'delete_entity_edge', description: 'Delete an entity edge by uuid.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'delete_entity_node', description: 'Delete an entity node and its incident edges.', inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: { type: 'string' } } } },
-  { name: 'clear_graph', description: 'Delete all data in a group (or entire db).', inputSchema: { type: 'object', properties: { group_id: { type: 'string' } } } },
+  { name: 'add_episode', description: 'Ingest an episode into the temporal knowledge graph. Extracts entities and facts via LLM, dedupes against existing graph, and invalidates contradicted facts with expired_at. Use for new observations or conversation turns.',
+    annotations: { title: 'Add Episode', ...write },
+    inputSchema: { type: 'object', required: ['content'], properties: { content: { type: 'string' }, name: { type: 'string' }, source: { type: 'string', enum: ['message', 'text', 'json'] }, source_description: { type: 'string' }, valid_at: { type: 'string', description: 'ISO-8601 when the episode content was true' }, saga_uuid: UUID, update_communities: { type: 'boolean' }, group_id: GROUP } } },
+  { name: 'add_episode_bulk', description: 'Ingest multiple episodes in one pass with cross-episode entity dedup. Faster than repeated add_episode when loading historical data.',
+    annotations: { title: 'Add Episodes (bulk)', ...write },
+    inputSchema: { type: 'object', required: ['episodes'], properties: { episodes: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' }, valid_at: { type: 'string' } } } }, group_id: GROUP } } },
+  { name: 'add_triplet', description: 'Directly insert a (source, relation, target) triplet without LLM extraction. Use when you already know the fact structure.',
+    annotations: { title: 'Add Triplet', ...idemp },
+    inputSchema: { type: 'object', required: ['sourceName', 'relation', 'targetName'], properties: { sourceName: { type: 'string' }, relation: { type: 'string' }, targetName: { type: 'string' }, fact: { type: 'string' }, valid_at: { type: 'string' }, group_id: GROUP } } },
+  { name: 'search', description: 'Hybrid search across nodes, edges, communities, and episodes. Combines vector similarity and BM25 with RRF fusion. Use for general "what do we know about X" queries.',
+    annotations: { title: 'Search All', ...read },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: LIMIT, center_node_uuids: { type: 'array', items: UUID }, reranker: { type: 'string', enum: ['rrf', 'mmr', 'node_distance', 'episode_mentions', 'cross_encoder'] }, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'search_nodes', description: 'Hybrid search restricted to entity nodes. Use when looking for specific entities (people, organizations, concepts).',
+    annotations: { title: 'Search Nodes', ...read },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: LIMIT, center_node_uuids: { type: 'array', items: UUID }, reranker: { type: 'string' }, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'search_facts', description: 'Hybrid search restricted to entity edges (facts). Excludes edges with expired_at set. Use for "what facts do we know" queries.',
+    annotations: { title: 'Search Facts', ...read },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: LIMIT, center_node_uuids: { type: 'array', items: UUID }, reranker: { type: 'string' }, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'search_communities', description: 'Search community summary clusters. Use for high-level thematic overview queries.',
+    annotations: { title: 'Search Communities', ...read },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: LIMIT, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'search_episodes', description: 'BM25 keyword search over raw episode content. Use for finding original source material.',
+    annotations: { title: 'Search Episodes', ...read },
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: LIMIT, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'get_episodes', description: 'List most recent episodes in reverse chronological order, optionally scoped to a reference time window.',
+    annotations: { title: 'List Episodes', ...read },
+    inputSchema: { type: 'object', properties: { limit: LIMIT, reference_time: { type: 'string', description: 'ISO-8601; return episodes with valid_at <= this time' }, as_of: AS_OF, group_id: GROUP } } },
+  { name: 'get_node', description: 'Fetch a single entity node by UUID.',
+    annotations: { title: 'Get Node', ...read },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'get_edge', description: 'Fetch a single entity edge by UUID.',
+    annotations: { title: 'Get Edge', ...read },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'get_episode', description: 'Fetch an episode by UUID including all entity nodes and edges extracted from it.',
+    annotations: { title: 'Get Episode', ...read },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'build_communities', description: 'Run label propagation community detection across the graph. Idempotent — replaces existing communities in the group.',
+    annotations: { title: 'Build Communities', ...idemp },
+    inputSchema: { type: 'object', properties: { group_id: GROUP } } },
+  { name: 'remove_communities', description: 'Delete all communities in a group. Does not affect entity nodes or edges.',
+    annotations: { title: 'Remove Communities', ...destroy },
+    inputSchema: { type: 'object', properties: { group_id: GROUP } } },
+  { name: 'create_saga', description: 'Create a saga (named conversation thread) for grouping related episodes.',
+    annotations: { title: 'Create Saga', ...write },
+    inputSchema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, summary: { type: 'string' }, group_id: GROUP } } },
+  { name: 'summarize_saga', description: 'Generate a summary of a saga from all its linked episodes via LLM.',
+    annotations: { title: 'Summarize Saga', ...idemp },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'delete_episode', description: 'Delete an episode by UUID. Also removes its episodic edges.',
+    annotations: { title: 'Delete Episode', ...destroy },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'delete_entity_edge', description: 'Delete an entity edge (fact) by UUID. For temporal invalidation use add_episode with contradicting content instead.',
+    annotations: { title: 'Delete Edge', ...destroy },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'delete_entity_node', description: 'Delete an entity node and all its incident edges.',
+    annotations: { title: 'Delete Node', ...destroy },
+    inputSchema: { type: 'object', required: ['uuid'], properties: { uuid: UUID } } },
+  { name: 'clear_graph', description: 'Delete all data in a group (or entire database if no group specified). Destructive and irreversible.',
+    annotations: { title: 'Clear Graph', ...destroy },
+    inputSchema: { type: 'object', properties: { group_id: GROUP } } },
 ];
 
 function text(payload) { return { content: [{ type: 'text', text: typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2) }] }; }
@@ -49,6 +99,7 @@ export async function startMcpServer(dbPath = resolve('bundag.db')) {
     try {
       const graph = await ensure(dbPath);
       const gid = args.group_id;
+      const asOf = args.as_of;
 
       if (name === 'add_episode') {
         const r = await graph.addEpisode({
@@ -74,25 +125,15 @@ export async function startMcpServer(dbPath = resolve('bundag.db')) {
       if (name === 'search') {
         const r = await graph.search(args.query, {
           groupIds: gid ? [gid] : undefined, limit: args.limit || 10,
-          centerNodeUuids: args.center_node_uuids,
+          centerNodeUuids: args.center_node_uuids, asOf,
         });
         return text(r);
       }
-      if (name === 'search_nodes') {
-        return text(await graph.searchNodes(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10, centerNodeUuids: args.center_node_uuids }));
-      }
-      if (name === 'search_facts') {
-        return text(await graph.searchEdges(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10, centerNodeUuids: args.center_node_uuids }));
-      }
-      if (name === 'search_communities') {
-        return text(await graph.searchCommunities(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 3 }));
-      }
-      if (name === 'search_episodes') {
-        return text(await graph.searchEpisodes(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10 }));
-      }
-      if (name === 'get_episodes') {
-        return text(await graph.retrieveEpisodes({ groupIds: gid ? [gid] : undefined, limit: args.limit || 3, referenceTime: args.reference_time }));
-      }
+      if (name === 'search_nodes') return text(await graph.searchNodes(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10, centerNodeUuids: args.center_node_uuids, asOf }));
+      if (name === 'search_facts') return text(await graph.searchEdges(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10, centerNodeUuids: args.center_node_uuids, asOf }));
+      if (name === 'search_communities') return text(await graph.searchCommunities(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 3, asOf }));
+      if (name === 'search_episodes') return text(await graph.searchEpisodes(args.query, { groupIds: gid ? [gid] : undefined, limit: args.limit || 10, asOf }));
+      if (name === 'get_episodes') return text(await graph.retrieveEpisodes({ groupIds: gid ? [gid] : undefined, limit: args.limit || 3, referenceTime: args.reference_time || asOf }));
       if (name === 'get_node') return text(await graph.getNodeByUuid(args.uuid));
       if (name === 'get_edge') return text(await graph.getEdgeByUuid(args.uuid));
       if (name === 'get_episode') return text(await graph.getNodesAndEdgesByEpisode(args.uuid));

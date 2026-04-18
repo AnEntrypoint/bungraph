@@ -1,4 +1,6 @@
 import { pipeline, env } from '@huggingface/transformers';
+import { createHash } from 'node:crypto';
+import { LRUCache } from 'lru-cache';
 
 try {
   env.backends.onnx.wasm.numThreads = 1;
@@ -14,21 +16,27 @@ async function getModel() {
   return modelCache;
 }
 
+const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
+
+function keyFor(text) {
+  return createHash('sha256').update(MODEL_ID).update('\0').update(text.normalize('NFC')).digest('hex');
+}
+
+const cache = new LRUCache({
+  max: 5000,
+  fetchMethod: async (_key, _stale, { context }) => {
+    const model = await getModel();
+    const out = await model([context.text], { pooling: 'mean', normalize: true });
+    const [bs, d] = out.dims;
+    return Array.from(out.data).slice(0, d);
+  },
+});
+
 export async function embed(texts) {
   if (!Array.isArray(texts)) texts = [texts];
   if (!texts.length) return [];
   const clean = texts.map(t => (t || '').replace(/\n/g, ' ').slice(0, 8000));
-  const model = await getModel();
-  const out = await model(clean, { pooling: 'mean', normalize: true });
-  const result = [];
-  if (out?.data && out.dims?.length === 2) {
-    const [bs, d] = out.dims;
-    const arr = Array.from(out.data);
-    for (let i = 0; i < bs; i++) result.push(arr.slice(i * d, (i + 1) * d));
-  } else {
-    result.push(Array.from(out.data || out));
-  }
-  return result;
+  return Promise.all(clean.map(text => cache.fetch(keyFor(text), { context: { text } })));
 }
 
 export async function embedOne(text) {

@@ -5,10 +5,7 @@ import {
 } from './store.js';
 import { embed, embedOne, EMBED_DIM } from './embeddings.js';
 import { getLLM } from './llm.js';
-import {
-  extractNodesMessage, extractTextNodesMessage, extractJsonNodesMessage,
-  dedupeNodesMessage, extractEdgesMessage, resolveEdgeMessage, summarizeNodeMessage,
-} from './prompts.js';
+import { promptLibrary } from './prompts/index.js';
 
 const DEFAULT_GROUP = 'default';
 const SIM_CANDIDATES = 10;
@@ -55,11 +52,21 @@ export class Graphiti {
 
     const llm = getLLM();
 
-    const extractPrompt = source === 'text' ? extractTextNodesMessage({ episode_content: content })
-      : source === 'json' ? extractJsonNodesMessage({ episode_content: content, source_description: sourceDescription })
-        : extractNodesMessage({ episode_content: content, previous_episodes: recent });
+    const entityTypesDesc = '0: Entity — Any named real-world entity.';
+    const extractPromptCtx = {
+      episode_content: content,
+      previous_episodes: recent,
+      source_description: sourceDescription,
+      entity_types: entityTypesDesc,
+      custom_extraction_instructions: '',
+    };
+    const extractPrompt = source === 'text' ? promptLibrary.extract_nodes.extract_text(extractPromptCtx)
+      : source === 'json' ? promptLibrary.extract_nodes.extract_json(extractPromptCtx)
+        : promptLibrary.extract_nodes.extract_message(extractPromptCtx);
     const extRes = await llm.generate(extractPrompt.system, extractPrompt.user);
-    const rawEntities = Array.isArray(extRes?.extracted_entities) ? extRes.extracted_entities : [];
+    const rawEntities = Array.isArray(extRes?.extracted_entities) ? extRes.extracted_entities
+      : Array.isArray(extRes?.entities) ? extRes.entities
+      : [];
 
     const candidateNodes = [];
     for (const e of rawEntities) {
@@ -84,7 +91,7 @@ export class Graphiti {
         existing_nodes: candidateNodes.flatMap((c, i) =>
           c.existing.map(e => ({ ...e, candidate_id: `${i}:${e.candidate_id}` }))),
       };
-      const dedupePrompt = dedupeNodesMessage(dedupeCtx);
+      const dedupePrompt = promptLibrary.dedupe_nodes.nodes(dedupeCtx);
       let dedupeRes;
       try {
         dedupeRes = await llm.generate(dedupePrompt.system, dedupePrompt.user);
@@ -131,11 +138,12 @@ export class Graphiti {
 
     let extractedEdges = [];
     if (resolvedNodes.length >= 2) {
-      const edgePrompt = extractEdgesMessage({
+      const edgePrompt = promptLibrary.extract_edges.edge({
         episode_content: content,
         previous_episodes: recent,
         nodes: resolvedNodes.map(n => ({ name: n.name })),
         reference_time: episode.valid_at,
+        custom_extraction_instructions: '',
       });
       let edgeRes;
       try { edgeRes = await llm.generate(edgePrompt.system, edgePrompt.user); }
@@ -172,7 +180,7 @@ export class Graphiti {
       const existingBetween = await getEdgesBetween([srcUuid, tgtUuid], [srcUuid, tgtUuid], [gid]);
       if (existingBetween.length > 0) {
         const items = existingBetween.map((e, i) => ({ idx: i, fact: e.fact, name: e.name }));
-        const resolvePrompt = resolveEdgeMessage({
+        const resolvePrompt = promptLibrary.dedupe_edges.resolve_edge({
           existing_edges: items,
           edge_invalidation_candidates: [],
           new_edge: { fact: ex.fact, name: newEdge.name },

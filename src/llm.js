@@ -115,9 +115,10 @@ export class LLMClient {
         prompt: [{ type: 'text', text: fullUser }],
       });
       const text = this.collectText();
+      if (process.env.BUNDAG_DEBUG_LLM) console.error('[bundag] LLM raw:', text.slice(0, 500));
       const parsed = this.parseJson(text);
       if (parsed) return parsed;
-      console.error('[bundag] llm returned non-JSON, retrying...');
+      console.error('[bundag] llm returned non-JSON (len=' + text.length + '), retrying...');
     }
     throw new Error('LLM failed to return JSON after retries');
   }

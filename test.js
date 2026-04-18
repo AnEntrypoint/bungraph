@@ -38,14 +38,14 @@ if (process.env.BUNDAG_SKIP_LLM) {
 
 console.log('[test] addEpisode (LLM via ACP)...');
 const r1 = await g.addEpisode({
-  content: 'Alice joined Acme Corp as a software engineer in March 2024.',
+  content: 'Alice Johnson joined Acme Corp as a software engineer in March 2024. She works from their Denver office.',
   source: 'text',
 });
 console.log('  ep1:', r1.episode.uuid, 'nodes', r1.nodes.length, 'edges', r1.edges.length);
 assert.ok(r1.nodes.length >= 1, 'ep1 should extract nodes');
 
 const r2 = await g.addEpisode({
-  content: 'Alice was promoted to senior engineer at Acme Corp in January 2025.',
+  content: 'Alice Johnson was promoted to senior engineer at Acme Corp in January 2025.',
   source: 'text',
 });
 console.log('  ep2:', r2.episode.uuid, 'nodes', r2.nodes.length, 'edges', r2.edges.length);

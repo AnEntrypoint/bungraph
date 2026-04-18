@@ -20,6 +20,7 @@ function help() {
 
 Usage:
   bundag mcp                              Run MCP stdio server
+  bundag serve [--port 8000]              Run HTTP REST server (graphiti server parity)
   bundag add "content" [--name N] [--source message|text|json] [--saga UUID]
   bundag bulk-add <json-file>             Bulk ingest from JSON array
   bundag triplet "source" "REL" "target" [--fact F]
@@ -58,6 +59,11 @@ async function main() {
   if (cmd === 'mcp') {
     const { startMcpServer } = await import('../mcp.js');
     await startMcpServer(dbPath);
+    return;
+  }
+  if (cmd === 'serve' || cmd === 'http') {
+    const { startHttpServer } = await import('../src/http-server.js');
+    await startHttpServer({ port: Number(a.flags.port) || 8000, dbPath });
     return;
   }
 

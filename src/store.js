@@ -41,6 +41,9 @@ const SCHEMA = [
     name_embedding F32_BLOB(384),
     created_at TEXT NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS community_node_group ON community_node(group_id)`,
+  `CREATE INDEX IF NOT EXISTS community_node_vec ON community_node(libsql_vector_idx(name_embedding))`,
+  `CREATE VIRTUAL TABLE IF NOT EXISTS community_node_fts USING fts5(uuid UNINDEXED, name, summary, tokenize='porter unicode61')`,
 
   `CREATE TABLE IF NOT EXISTS saga_node (
     uuid TEXT PRIMARY KEY,
@@ -307,6 +310,45 @@ export async function graphWalk(startUuids, depth = 1, groupIds) {
   return r.rows;
 }
 
+export async function upsertCommunityNode(c) {
+  await db.execute({
+    sql: `INSERT INTO community_node(uuid,group_id,name,summary,name_embedding,created_at)
+          VALUES(?,?,?,?,${vecLit(c.name_embedding)},?)
+          ON CONFLICT(uuid) DO UPDATE SET name=excluded.name, summary=excluded.summary, name_embedding=excluded.name_embedding`,
+    args: [c.uuid, c.group_id, c.name, c.summary || '', c.created_at],
+  });
+  await db.execute({ sql: `DELETE FROM community_node_fts WHERE uuid=?`, args: [c.uuid] });
+  await db.execute({
+    sql: `INSERT INTO community_node_fts(uuid,name,summary) VALUES(?,?,?)`,
+    args: [c.uuid, c.name, c.summary || ''],
+  });
+}
+
+export async function vectorSearchCommunities(queryVec, groupIds, limit = 10) {
+  const r = await db.execute({
+    sql: `SELECT c.*, vector_distance_cos(c.name_embedding, ${vecLit(queryVec)}) AS dist
+          FROM vector_top_k('community_node_vec', ${vecLit(queryVec)}, ?) AS t
+          JOIN community_node c ON c.rowid = t.id
+          ${groupIds?.length ? `WHERE c.group_id IN (${groupIds.map(() => '?').join(',')})` : ''}
+          ORDER BY dist ASC LIMIT ?`,
+    args: [limit * 4, ...(groupIds || []), limit],
+  });
+  return r.rows;
+}
+
+export async function ftsSearchCommunities(query, groupIds, limit = 10) {
+  const ftsQ = query.replace(/"/g, '""').split(/\s+/).filter(Boolean).map(t => `"${t}"*`).join(' OR ') || query;
+  const r = await db.execute({
+    sql: `SELECT c.*, bm25(community_node_fts) AS score
+          FROM community_node_fts f JOIN community_node c ON c.uuid = f.uuid
+          WHERE community_node_fts MATCH ?
+          ${groupIds?.length ? `AND c.group_id IN (${groupIds.map(() => '?').join(',')})` : ''}
+          ORDER BY score LIMIT ?`,
+    args: [ftsQ, ...(groupIds || []), limit],
+  });
+  return r.rows;
+}
+
 export async function deleteEpisode(uuid) {
   await db.execute({ sql: `DELETE FROM episodic_edge WHERE source_node_uuid=?`, args: [uuid] });
   await db.execute({ sql: `DELETE FROM episodic_node_fts WHERE uuid=?`, args: [uuid] });
@@ -314,10 +356,23 @@ export async function deleteEpisode(uuid) {
 }
 
 export async function clearGroup(groupId) {
-  const tables = ['entity_edge', 'episodic_edge', 'community_edge', 'entity_node', 'episodic_node', 'community_node'];
-  for (const t of tables) {
+  const groupTables = ['entity_edge', 'episodic_edge', 'community_edge', 'has_episode_edge', 'next_episode_edge', 'entity_node', 'episodic_node', 'community_node', 'saga_node'];
+  for (const t of groupTables) {
     await db.execute({ sql: `DELETE FROM ${t} WHERE group_id=?`, args: [groupId] });
   }
+  // FTS tables have no group_id — rebuild from remaining rows
+  await db.execute({ sql: `DELETE FROM entity_node_fts`, args: [] });
+  await db.execute({ sql: `DELETE FROM entity_edge_fts`, args: [] });
+  await db.execute({ sql: `DELETE FROM episodic_node_fts`, args: [] });
+  await db.execute({ sql: `DELETE FROM community_node_fts`, args: [] });
+  const nodes = await db.execute({ sql: `SELECT uuid, name, summary FROM entity_node`, args: [] });
+  for (const n of nodes.rows) await db.execute({ sql: `INSERT INTO entity_node_fts(uuid,name,summary) VALUES(?,?,?)`, args: [n.uuid, n.name, n.summary || ''] });
+  const edges = await db.execute({ sql: `SELECT uuid, fact FROM entity_edge`, args: [] });
+  for (const e of edges.rows) await db.execute({ sql: `INSERT INTO entity_edge_fts(uuid,fact) VALUES(?,?)`, args: [e.uuid, e.fact] });
+  const epis = await db.execute({ sql: `SELECT uuid, name, content FROM episodic_node`, args: [] });
+  for (const ep of epis.rows) await db.execute({ sql: `INSERT INTO episodic_node_fts(uuid,name,content) VALUES(?,?,?)`, args: [ep.uuid, ep.name, ep.content] });
+  const comms = await db.execute({ sql: `SELECT uuid, name, summary FROM community_node`, args: [] });
+  for (const c of comms.rows) await db.execute({ sql: `INSERT INTO community_node_fts(uuid,name,summary) VALUES(?,?,?)`, args: [c.uuid, c.name, c.summary || ''] });
 }
 
 export async function closeStore() {

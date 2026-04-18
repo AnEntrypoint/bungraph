@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import { extractNodes, resolveExtractedNodes, extractAttributesFromNodes } from './node-operations.js';
-import { extractEdges, resolveExtractedEdges, buildEpisodicEdges } from './edge-operations.js';
+import { extractNodes, resolveExtractedNodes, extractAttributesFromNodes, MAX_NODES } from './node-operations.js';
+import { extractEdges, resolveExtractedEdges, buildEpisodicEdges, extractEdgeAttributes } from './edge-operations.js';
 import { retrieveEpisodes } from './graph-data-operations.js';
 import {
   upsertEntityNode, upsertEntityEdge, upsertEpisodicNode, upsertEpisodicEdge, expireEdge,
@@ -32,6 +32,10 @@ export async function extractNodesAndEdgesBulk({ episodes, entityTypes = null, e
       extractedNodes, episode, previousEpisodes, entityTypes,
     });
     const edges = await extractEdges({ episode, nodes: resolved, previousEpisodes, edgeTypes });
+    if (edgeTypes) {
+      for (const e of edges) await extractEdgeAttributes({ edge: e, edgeTypes });
+    }
+    await extractAttributesFromNodes({ nodes: resolved, episode, previousEpisodes, entityTypes, edges });
     edgeResults.push({ episode, nodes: resolved, edges, uuidMap, previousEpisodes });
   }
   return edgeResults;

@@ -1,6 +1,7 @@
 import { embedOne } from './embeddings.js';
 import {
-  vectorSearchNodes, vectorSearchEdges, ftsSearchNodes, ftsSearchEdges, getDb, graphWalk,
+  vectorSearchNodes, vectorSearchEdges, ftsSearchNodes, ftsSearchEdges,
+  vectorSearchCommunities, ftsSearchCommunities, getDb, graphWalk,
 } from './store.js';
 import {
   rrf, mmr, nodeDistanceRerank, episodeMentionsRerank, cos,
@@ -11,6 +12,40 @@ import {
   NodeReranker, EdgeReranker, CommunityReranker, DEFAULT_SEARCH_LIMIT,
 } from './search-config.js';
 import { SearchFilters } from './search-filters.js';
+
+function applyNodeFilters(nodes, filters) {
+  if (!filters) return nodes;
+  return nodes.filter(n => {
+    if (filters.nodeLabels?.length) {
+      const labels = typeof n.labels === 'string' ? JSON.parse(n.labels || '[]') : (n.labels || []);
+      if (!filters.nodeLabels.some(l => labels.includes(l))) return false;
+    }
+    if (filters.createdAt) {
+      if (filters.createdAt.gte && n.created_at < filters.createdAt.gte) return false;
+      if (filters.createdAt.lte && n.created_at > filters.createdAt.lte) return false;
+    }
+    return true;
+  });
+}
+
+function applyEdgeFilters(edges, filters) {
+  if (!filters) return edges;
+  return edges.filter(e => {
+    if (filters.edgeTypes?.length && !filters.edgeTypes.includes(e.name)) return false;
+    if (filters.validAt) {
+      if (filters.validAt.gte && e.valid_at && e.valid_at < filters.validAt.gte) return false;
+      if (filters.validAt.lte && e.valid_at && e.valid_at > filters.validAt.lte) return false;
+    }
+    if (filters.invalidAt) {
+      if (filters.invalidAt.gte && e.invalid_at && e.invalid_at < filters.invalidAt.gte) return false;
+      if (filters.invalidAt.lte && e.invalid_at && e.invalid_at > filters.invalidAt.lte) return false;
+    }
+    if (filters.expiredAt !== undefined) {
+      if (filters.expiredAt === null && e.expired_at !== null) return false;
+    }
+    return true;
+  });
+}
 
 async function runReranker(query, items, reranker, { queryVec = null, mmrLambda = 0.5, centerNodeUuids = null, field = 'name_embedding', limit = 10 } = {}) {
   if (!items.length) return items;
@@ -29,24 +64,6 @@ async function runReranker(query, items, reranker, { queryVec = null, mmrLambda 
   }
 }
 
-async function searchCommunitiesVec(queryVec, groupIds, limit) {
-  const db = getDb();
-  const r = await db.execute({
-    sql: `SELECT * FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')}) LIMIT ?`,
-    args: [...groupIds, limit],
-  });
-  return r.rows;
-}
-
-async function searchCommunitiesFts(query, groupIds, limit) {
-  // community table not in FTS; fallback to LIKE
-  const db = getDb();
-  const r = await db.execute({
-    sql: `SELECT * FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')}) AND (name LIKE ? OR summary LIKE ?) LIMIT ?`,
-    args: [...groupIds, `%${query}%`, `%${query}%`, limit],
-  });
-  return r.rows;
-}
 
 async function searchEpisodesFts(query, groupIds, limit) {
   const db = getDb();
@@ -83,7 +100,7 @@ export async function search({ query, groupIds = null, config = null, centerNode
       queryVec: qvec, mmrLambda: sc.nodeConfig.mmr_lambda, centerNodeUuids,
       field: 'name_embedding', limit: qLimit,
     });
-    out.nodes = merged.slice(0, qLimit);
+    out.nodes = applyNodeFilters(merged, filters).slice(0, qLimit);
   }
 
   if (sc.edgeConfig) {
@@ -96,13 +113,13 @@ export async function search({ query, groupIds = null, config = null, centerNode
       queryVec: qvec, mmrLambda: sc.edgeConfig.mmr_lambda, centerNodeUuids,
       field: 'fact_embedding', limit: qLimit,
     });
-    out.edges = merged.slice(0, qLimit);
+    out.edges = applyEdgeFilters(merged, filters).slice(0, qLimit);
   }
 
   if (sc.communityConfig) {
     const [vec, fts] = await Promise.all([
-      sc.communityConfig.search_methods.includes('cosine') ? searchCommunitiesVec(qvec, groupIds || ['default'], qLimit * 2) : [],
-      sc.communityConfig.search_methods.includes('bm25') ? searchCommunitiesFts(query, groupIds || ['default'], qLimit * 2) : [],
+      sc.communityConfig.search_methods.includes('cosine') ? vectorSearchCommunities(qvec, groupIds, qLimit * 2) : [],
+      sc.communityConfig.search_methods.includes('bm25') ? ftsSearchCommunities(query, groupIds, qLimit * 2) : [],
     ]);
     let merged = rrf([vec, fts]);
     merged = await runReranker(query, merged, sc.communityConfig.reranker, {

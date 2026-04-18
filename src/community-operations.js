@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { embedOne } from './embeddings.js';
 import { getLLM } from './llm.js';
 import { promptLibrary } from './prompts/index.js';
-import { getDb, vecLit } from './store.js';
+import { getDb, vecLit, upsertCommunityNode } from './store.js';
 import { MAX_SUMMARY_CHARS, truncateAtSentence } from './text-utils.js';
 
 function nowIso() { return new Date().toISOString(); }
@@ -74,6 +74,8 @@ export async function buildCommunities({ groupIds }) {
   const llm = getLLM();
 
   // clear existing communities in group
+  const existingComms = await db.execute({ sql: `SELECT uuid FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
+  for (const c of existingComms.rows) await db.execute({ sql: `DELETE FROM community_node_fts WHERE uuid=?`, args: [c.uuid] });
   await db.execute({ sql: `DELETE FROM community_edge WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
   await db.execute({ sql: `DELETE FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
 
@@ -92,9 +94,9 @@ export async function buildCommunities({ groupIds }) {
     const name = members.slice(0, 3).map(m => m.name).join(' / ');
     const commUuid = uuidv4();
     const nameEmb = await embedOne(name);
-    await db.execute({
-      sql: `INSERT INTO community_node(uuid,group_id,name,summary,name_embedding,created_at) VALUES(?,?,?,?,${vecLit(nameEmb)},?)`,
-      args: [commUuid, members[0].group_id, name, summary, nowIso()],
+    await upsertCommunityNode({
+      uuid: commUuid, group_id: members[0].group_id, name, summary,
+      name_embedding: nameEmb, created_at: nowIso(),
     });
     for (const m of members) {
       await db.execute({
@@ -134,6 +136,8 @@ export async function updateCommunity({ nodeUuid, groupId }) {
 
 export async function removeCommunities({ groupIds }) {
   const db = getDb();
+  const existing = await db.execute({ sql: `SELECT uuid FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
+  for (const c of existing.rows) await db.execute({ sql: `DELETE FROM community_node_fts WHERE uuid=?`, args: [c.uuid] });
   await db.execute({ sql: `DELETE FROM community_edge WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
   await db.execute({ sql: `DELETE FROM community_node WHERE group_id IN (${groupIds.map(() => '?').join(',')})`, args: groupIds });
 }

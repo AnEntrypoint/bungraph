@@ -310,6 +310,13 @@ export class Graphiti {
   async deleteEntityNode(uuid) {
     await this.init();
     const db = getDb();
+    const edgesToDelete = await db.execute({
+      sql: `SELECT uuid FROM entity_edge WHERE source_node_uuid=? OR target_node_uuid=?`,
+      args: [uuid, uuid],
+    });
+    for (const e of edgesToDelete.rows) {
+      await db.execute({ sql: `DELETE FROM entity_edge_fts WHERE uuid=?`, args: [e.uuid] });
+    }
     await db.execute({ sql: `DELETE FROM entity_edge WHERE source_node_uuid=? OR target_node_uuid=?`, args: [uuid, uuid] });
     await db.execute({ sql: `DELETE FROM episodic_edge WHERE target_node_uuid=?`, args: [uuid] });
     await db.execute({ sql: `DELETE FROM entity_node_fts WHERE uuid=?`, args: [uuid] });

@@ -21,7 +21,7 @@ export async function extractEdges({ episode, nodes, previousEpisodes = [], edge
   });
   let res;
   try { res = await llm.generate(prompt.system, prompt.user); }
-  catch { res = { edges: [] }; }
+  catch (e) { console.error('[bungraph] extractEdges LLM failed:', e?.message || e); res = { edges: [] }; }
   const raw = Array.isArray(res?.edges) ? res.edges : [];
 
   const nameToUuid = new Map(nodes.map(n => [n.name.toLowerCase(), n.uuid]));

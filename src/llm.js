@@ -69,9 +69,7 @@ export class LLMClient {
       env: process.env,
     });
     this.proc.stderr.on('data', (d) => {
-      if (process.env.BUNDAG_DEBUG_LLM || process.env.BUNDAG_DEBUG_ACP) {
-        process.stderr.write('[acp] ' + d.toString());
-      }
+      process.stderr.write('[acp] ' + d.toString());
     });
     this.proc.on('error', (e) => console.error('[bundag] acp spawn error', e));
     this.proc.on('exit', (c) => { this.conn = null; this.sessionId = null; });

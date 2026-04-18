@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { extractNodes, resolveExtractedNodes, extractAttributesFromNodes, MAX_NODES } from './node-operations.js';
+import { extractNodes, resolveExtractedNodes, extractAttributesFromNodes, MAX_NODES, semanticCandidateSearch } from './node-operations.js';
 import { extractEdges, resolveExtractedEdges, buildEpisodicEdges, extractEdgeAttributes } from './edge-operations.js';
 import { retrieveEpisodes } from './graph-data-operations.js';
 import {
@@ -42,7 +42,6 @@ export async function extractNodesAndEdgesBulk({ episodes, entityTypes = null, e
 }
 
 export async function dedupeNodesBulk(nodesLists) {
-  // flatten and collapse by normalized name per group
   const byGroup = new Map();
   for (const list of nodesLists) {
     for (const n of list) {
@@ -53,9 +52,11 @@ export async function dedupeNodesBulk(nodesLists) {
       if (!bucket.has(key)) bucket.set(key, n);
     }
   }
-  const merged = [];
-  for (const bucket of byGroup.values()) for (const n of bucket.values()) merged.push(n);
-  return merged;
+  const collapsed = [];
+  for (const bucket of byGroup.values()) for (const n of bucket.values()) collapsed.push(n);
+  // resolve against existing DB nodes (same as single-episode path)
+  const { resolved, uuidMap } = await resolveExtractedNodes({ extractedNodes: collapsed });
+  return resolved;
 }
 
 export async function dedupeEdgesBulk(edgesLists) {

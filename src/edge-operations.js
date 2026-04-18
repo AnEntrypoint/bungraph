@@ -90,8 +90,12 @@ export async function resolveExtractedEdges({ extractedEdges, episode }) {
       [newEdge.source_node_uuid, newEdge.target_node_uuid],
       [newEdge.group_id]
     );
+    const existingUuids = new Set(existing.map(e => e.uuid));
+    // broader semantic candidates for contradiction detection
+    const semanticCandidates = await vectorSearchEdges(newEdge.fact_embedding, [newEdge.group_id], EDGE_DEDUP_CANDIDATE_LIMIT);
+    const invalidationCandidates = semanticCandidates.filter(e => !existingUuids.has(e.uuid));
     const { duplicateOf, contradicted } = await resolveExtractedEdge({
-      newEdge, existingEdges: existing, invalidationCandidates: [],
+      newEdge, existingEdges: existing, invalidationCandidates,
     });
     results.push({ newEdge, duplicateOf, contradicted });
   }

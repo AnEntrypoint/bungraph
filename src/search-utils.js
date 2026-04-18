@@ -53,12 +53,21 @@ export function mmr(candidates, queryVec, lambda = DEFAULT_MMR_LAMBDA, limit = 1
   return selected;
 }
 
-export function nodeDistanceRerank(rows, centerNodeUuids, boost = 1.5) {
+export async function nodeDistanceRerank(rows, centerNodeUuids, boost = 1.5) {
   if (!centerNodeUuids?.length) return rows;
-  const set = new Set(centerNodeUuids);
+  const direct = new Set(centerNodeUuids);
+  // 1-hop neighbors via entity_edge
+  const neighbors = new Set(centerNodeUuids);
+  try {
+    const walked = await graphWalk(centerNodeUuids, 1);
+    for (const n of walked) neighbors.add(n.uuid);
+  } catch {}
   return rows.map(r => {
-    const inCenter = set.has(r.uuid) || set.has(r.source_node_uuid) || set.has(r.target_node_uuid);
-    return inCenter ? { ...r, _score: (r._score || 0) * boost } : r;
+    const uuid = r.uuid || r.source_node_uuid || r.target_node_uuid;
+    const inDirect = direct.has(r.uuid) || direct.has(r.source_node_uuid) || direct.has(r.target_node_uuid);
+    const inNeighbor = neighbors.has(r.uuid) || neighbors.has(r.source_node_uuid) || neighbors.has(r.target_node_uuid);
+    const factor = inDirect ? boost : inNeighbor ? boost * 0.7 : 1;
+    return { ...r, _score: (r._score || 0) * factor };
   }).sort((a, b) => (b._score || 0) - (a._score || 0));
 }
 
@@ -72,15 +81,36 @@ export async function edgeSimilaritySearch(queryVec, groupIds, limit = 15, minSc
   return rows.filter(r => (1 - (r.dist || 0)) >= minScore);
 }
 
-export async function episodeMentionsRerank(edges, episodeUuids) {
+export async function episodeMentionsRerank(items, centerNodeUuids) {
+  if (!items.length) return items;
   const db = getDb();
-  const counts = new Map();
-  for (const u of episodeUuids) counts.set(u, (counts.get(u) || 0) + 1);
-  return edges.map(e => {
-    const eps = JSON.parse(e.episodes || '[]');
-    const boost = eps.reduce((acc, u) => acc + (counts.get(u) || 0), 0);
-    return { ...e, _score: (e._score || 0) + boost * 0.01 };
-  }).sort((a, b) => (b._score || 0) - (a._score || 0));
+  const isEdge = 'fact' in (items[0] || {});
+  if (isEdge) {
+    // edges: boost by how many episodes in centerNodeUuids (treated as episode UUIDs) reference the edge
+    const counts = new Map();
+    for (const u of (centerNodeUuids || [])) counts.set(u, (counts.get(u) || 0) + 1);
+    return items.map(e => {
+      const eps = JSON.parse(e.episodes || '[]');
+      const boost = eps.reduce((acc, u) => acc + (counts.get(u) || 0), 0);
+      return { ...e, _score: (e._score || 0) + boost * 0.01 };
+    }).sort((a, b) => (b._score || 0) - (a._score || 0));
+  }
+  // nodes: count episodic_edge mentions per node, boost proportionally
+  const mentionCounts = new Map();
+  for (const n of items) {
+    try {
+      const r = await db.execute({
+        sql: `SELECT COUNT(*) as cnt FROM episodic_edge WHERE target_node_uuid=?`,
+        args: [n.uuid],
+      });
+      mentionCounts.set(n.uuid, Number(r.rows[0]?.cnt || 0));
+    } catch { mentionCounts.set(n.uuid, 0); }
+  }
+  const maxMentions = Math.max(1, ...mentionCounts.values());
+  return items.map(n => ({
+    ...n,
+    _score: (n._score || 0) + (mentionCounts.get(n.uuid) || 0) / maxMentions * 0.1,
+  })).sort((a, b) => (b._score || 0) - (a._score || 0));
 }
 
 export async function getMentionedNodes(episodeUuids) {

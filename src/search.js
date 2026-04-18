@@ -53,7 +53,7 @@ async function runReranker(query, items, reranker, { queryVec = null, mmrLambda 
     case 'mmr':
       return mmr(items, queryVec, mmrLambda, limit, field).slice(0, limit);
     case 'node_distance':
-      return nodeDistanceRerank(items, centerNodeUuids).slice(0, limit);
+      return (await nodeDistanceRerank(items, centerNodeUuids)).slice(0, limit);
     case 'episode_mentions':
       return (await episodeMentionsRerank(items, centerNodeUuids || [])).slice(0, limit);
     case 'cross_encoder':
@@ -88,6 +88,19 @@ export async function search({ query, groupIds = null, config = null, centerNode
 
   const qvec = await embedOne(query);
 
+  // auto-resolve center nodes from query when not provided — used by node_distance and episode_mentions rerankers
+  let resolvedCenterUuids = centerNodeUuids;
+  const needsCenter = !centerNodeUuids && (
+    sc.nodeConfig?.reranker === 'node_distance' || sc.nodeConfig?.reranker === 'episode_mentions' ||
+    sc.edgeConfig?.reranker === 'node_distance' || sc.edgeConfig?.reranker === 'episode_mentions'
+  );
+  if (needsCenter) {
+    try {
+      const centerRows = await vectorSearchNodes(qvec, groupIds, 3);
+      resolvedCenterUuids = centerRows.map(r => r.uuid);
+    } catch {}
+  }
+
   const out = { nodes: [], edges: [], communities: [], episodes: [] };
 
   if (sc.nodeConfig) {
@@ -97,7 +110,7 @@ export async function search({ query, groupIds = null, config = null, centerNode
     ]);
     let merged = rrf([vec, fts]);
     merged = await runReranker(query, merged, sc.nodeConfig.reranker, {
-      queryVec: qvec, mmrLambda: sc.nodeConfig.mmr_lambda, centerNodeUuids,
+      queryVec: qvec, mmrLambda: sc.nodeConfig.mmr_lambda, centerNodeUuids: resolvedCenterUuids,
       field: 'name_embedding', limit: qLimit,
     });
     out.nodes = applyNodeFilters(merged, filters).slice(0, qLimit);
@@ -110,7 +123,7 @@ export async function search({ query, groupIds = null, config = null, centerNode
     ]);
     let merged = rrf([vec, fts]);
     merged = await runReranker(query, merged, sc.edgeConfig.reranker, {
-      queryVec: qvec, mmrLambda: sc.edgeConfig.mmr_lambda, centerNodeUuids,
+      queryVec: qvec, mmrLambda: sc.edgeConfig.mmr_lambda, centerNodeUuids: resolvedCenterUuids,
       field: 'fact_embedding', limit: qLimit,
     });
     out.edges = applyEdgeFilters(merged, filters).slice(0, qLimit);

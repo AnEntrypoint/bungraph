@@ -30,18 +30,47 @@ Register as a permanent MCP server:
 claude mcp add -s user bungraph -- bunx bungraph
 ```
 
-## MCP tools (20)
+## MCP tools (21)
 
 Ingestion: `add_episode`, `add_episode_bulk`, `add_triplet`
-Search: `search`, `search_nodes`, `search_facts`, `search_communities`, `search_episodes`
+Search: `search`, `search_nodes`, `search_facts`, `search_communities`, `search_episodes` — all accept `as_of` for bitemporal queries
 Retrieval: `get_episodes`, `get_node`, `get_edge`, `get_episode`
 Communities: `build_communities`, `remove_communities`
 Sagas: `create_saga`, `summarize_saga`
 Mutation: `delete_episode`, `delete_entity_edge`, `delete_entity_node`, `clear_graph`
+Observability: `debug_state` — returns in-process subsystem snapshot (tx stats, writer mutex, LLM inflight, embeddings cache, store URL)
+
+All tool inputs validated with strict zod schemas; unknown keys rejected. Every tool returns `structuredContent` alongside human-readable `content`; failures return RFC 9457-style problem descriptors.
 
 ## HTTP endpoints
 
-`POST /messages` · `POST /entity-node` · `DELETE /entity-edge/:uuid` · `DELETE /group/:gid` · `DELETE /episode/:uuid` · `POST /clear` · `POST /search` · `GET /entity-edge/:uuid` · `GET /episodes/:gid` · `POST /get-memory` · `POST /build-communities` · `POST /triplet` · `GET /healthcheck`
+`POST /messages` · `POST /entity-node` · `DELETE /entity-edge/:uuid` · `DELETE /group/:gid` · `DELETE /episode/:uuid` · `POST /clear` · `POST /search` (accepts `as_of`) · `GET /entity-edge/:uuid` · `GET /episodes/:gid` · `POST /get-memory` · `POST /build-communities` · `POST /triplet` · `GET /healthcheck` · `GET /debug/state`
+
+Errors conform to RFC 9457 `application/problem+json`: `{type, title, status, detail, issues?}`. Bodies capped at 4 MB; invalid JSON returns 400; validation failures surface zod issues.
+
+## Bitemporal queries
+
+Every edge carries `valid_at` (when the fact became true in the world) and `expired_at` (when the system learned it was no longer true). Search accepts `as_of: <ISO-8601>` and returns only edges active at that moment:
+
+```js
+await graph.search('who does Alice work for', { asOf: '2024-06-01T00:00:00Z' });
+```
+
+Transaction safety: every multi-statement upsert runs through `withTx` with BEGIN IMMEDIATE semantics + writer mutex + jittered SQLITE_BUSY retry (up to 8 attempts, exponential backoff capped at 2s).
+
+## Configuration
+
+| env | default | purpose |
+|---|---|---|
+| `BUNGRAPH_LOG_LEVEL` | `info` | `trace`/`debug`/`info`/`warn`/`error`/`silent` |
+| `BUNGRAPH_LLM_MAX_ATTEMPTS` | 5 | retry budget for claude-cli failures |
+| `BUNGRAPH_LLM_TIMEOUT_MS` | 60000 | per-call timeout |
+| `BUNGRAPH_LLM_BACKOFF_CAP_MS` | 20000 | max backoff between retries |
+| `BUNGRAPH_CLAUDE_BIN` | auto-detect | override path to `claude` binary |
+| `BUNGRAPH_STUB_EMBEDDINGS` | off | stub deterministic vectors for offline tests |
+| `BUNDAG_SKIP_LLM` | off | skip LLM-dependent branches of `test.js` |
+
+Logs are JSON lines on stderr with subsystem routing; API keys and `authorization`/`apiKey`/`token`/`secret`/`password`/`bearer` fields redacted automatically.
 
 ## Pipeline
 

@@ -1,17 +1,15 @@
 import { embedOne } from './embeddings.js';
 import {
   vectorSearchNodes, vectorSearchEdges, ftsSearchNodes, ftsSearchEdges,
-  vectorSearchCommunities, ftsSearchCommunities, getDb, graphWalk,
+  vectorSearchCommunities, ftsSearchCommunities, getDb,
 } from './store.js';
-import {
-  rrf, mmr, nodeDistanceRerank, episodeMentionsRerank, cos,
-} from './search-utils.js';
+import { rrf, mmr, nodeDistanceRerank, episodeMentionsRerank } from './search-utils.js';
 import { crossEncoderRerank } from './rerankers.js';
 import {
   SearchConfig, NodeSearchConfig, EdgeSearchConfig, CommunitySearchConfig, EpisodeSearchConfig,
-  NodeReranker, EdgeReranker, CommunityReranker, DEFAULT_SEARCH_LIMIT,
+  DEFAULT_SEARCH_LIMIT,
 } from './search-config.js';
-import { SearchFilters } from './search-filters.js';
+import { activeAtClause, activeAtArgs } from './store-schema.js';
 
 function applyNodeFilters(nodes, filters) {
   if (!filters) return nodes;
@@ -28,9 +26,19 @@ function applyNodeFilters(nodes, filters) {
   });
 }
 
-function applyEdgeFilters(edges, filters) {
-  if (!filters) return edges;
-  return edges.filter(e => {
+function applyEdgeFilters(edges, filters, asOf) {
+  let out = edges;
+  if (asOf) {
+    out = out.filter(e => {
+      const va = e.valid_at, inv = e.invalid_at, exp = e.expired_at;
+      if (va && va > asOf) return false;
+      if (inv && inv <= asOf) return false;
+      if (exp && exp <= asOf) return false;
+      return true;
+    });
+  }
+  if (!filters) return out;
+  return out.filter(e => {
     if (filters.edgeTypes?.length && !filters.edgeTypes.includes(e.name)) return false;
     if (filters.validAt) {
       if (filters.validAt.gte && e.valid_at && e.valid_at < filters.validAt.gte) return false;
@@ -50,45 +58,38 @@ function applyEdgeFilters(edges, filters) {
 async function runReranker(query, items, reranker, { queryVec = null, mmrLambda = 0.5, centerNodeUuids = null, field = 'name_embedding', limit = 10 } = {}) {
   if (!items.length) return items;
   switch (reranker) {
-    case 'mmr':
-      return mmr(items, queryVec, mmrLambda, limit, field).slice(0, limit);
-    case 'node_distance':
-      return (await nodeDistanceRerank(items, centerNodeUuids)).slice(0, limit);
-    case 'episode_mentions':
-      return (await episodeMentionsRerank(items, centerNodeUuids || [])).slice(0, limit);
-    case 'cross_encoder':
-      return (await crossEncoderRerank(query, items, field.includes('fact') ? 'fact' : 'name')).slice(0, limit);
+    case 'mmr': return mmr(items, queryVec, mmrLambda, limit, field).slice(0, limit);
+    case 'node_distance': return (await nodeDistanceRerank(items, centerNodeUuids)).slice(0, limit);
+    case 'episode_mentions': return (await episodeMentionsRerank(items, centerNodeUuids || [])).slice(0, limit);
+    case 'cross_encoder': return (await crossEncoderRerank(query, items, field.includes('fact') ? 'fact' : 'name')).slice(0, limit);
     case 'rrf':
-    default:
-      return items.slice(0, limit);
+    default: return items.slice(0, limit);
   }
 }
 
-
-async function searchEpisodesFts(query, groupIds, limit) {
+async function searchEpisodesFts(query, groupIds, limit, asOf) {
   const db = getDb();
   const ftsQ = query.replace(/"/g, '""').split(/\s+/).filter(Boolean).map(t => `"${t}"*`).join(' OR ') || query;
+  const where = [`episodic_node_fts MATCH ?`];
+  const args = [ftsQ];
+  if (asOf) { where.push('e.valid_at <= ?'); args.push(asOf); }
+  if (groupIds?.length) { where.push(`e.group_id IN (${groupIds.map(() => '?').join(',')})`); args.push(...groupIds); }
+  args.push(limit);
   const r = await db.execute({
     sql: `SELECT e.*, bm25(episodic_node_fts) AS score
           FROM episodic_node_fts f JOIN episodic_node e ON e.uuid = f.uuid
-          WHERE episodic_node_fts MATCH ?
-          ${groupIds?.length ? `AND e.group_id IN (${groupIds.map(() => '?').join(',')})` : ''}
+          WHERE ${where.join(' AND ')}
           ORDER BY score LIMIT ?`,
-    args: [ftsQ, ...(groupIds || []), limit],
+    args,
   });
   return r.rows;
 }
 
-export async function search({ query, groupIds = null, config = null, centerNodeUuids = null, filters = null, limit = null } = {}) {
-  const sc = config || new SearchConfig({
-    nodeConfig: new NodeSearchConfig({}),
-    edgeConfig: new EdgeSearchConfig({}),
-  });
+export async function search({ query, groupIds = null, config = null, centerNodeUuids = null, filters = null, limit = null, asOf = null } = {}) {
+  const sc = config || new SearchConfig({ nodeConfig: new NodeSearchConfig({}), edgeConfig: new EdgeSearchConfig({}) });
   const qLimit = limit || sc.limit || DEFAULT_SEARCH_LIMIT;
-
   const qvec = await embedOne(query);
 
-  // auto-resolve center nodes from query when not provided — used by node_distance and episode_mentions rerankers
   let resolvedCenterUuids = centerNodeUuids;
   const needsCenter = !centerNodeUuids && (
     sc.nodeConfig?.reranker === 'node_distance' || sc.nodeConfig?.reranker === 'episode_mentions' ||
@@ -118,15 +119,16 @@ export async function search({ query, groupIds = null, config = null, centerNode
 
   if (sc.edgeConfig) {
     const [vec, fts] = await Promise.all([
-      sc.edgeConfig.search_methods.includes('cosine') ? vectorSearchEdges(qvec, groupIds, qLimit * 2) : [],
-      sc.edgeConfig.search_methods.includes('bm25') ? ftsSearchEdges(query, groupIds, qLimit * 2) : [],
+      sc.edgeConfig.search_methods.includes('cosine') ? vectorSearchEdges(qvec, groupIds, qLimit * 2, asOf) : [],
+      sc.edgeConfig.search_methods.includes('bm25') ? ftsSearchEdges(query, groupIds, qLimit * 2, asOf) : [],
     ]);
     let merged = rrf([vec, fts]);
+    merged = applyEdgeFilters(merged, filters, asOf);
     merged = await runReranker(query, merged, sc.edgeConfig.reranker, {
       queryVec: qvec, mmrLambda: sc.edgeConfig.mmr_lambda, centerNodeUuids: resolvedCenterUuids,
       field: 'fact_embedding', limit: qLimit,
     });
-    out.edges = applyEdgeFilters(merged, filters).slice(0, qLimit);
+    out.edges = merged.slice(0, qLimit);
   }
 
   if (sc.communityConfig) {
@@ -142,8 +144,7 @@ export async function search({ query, groupIds = null, config = null, centerNode
   }
 
   if (sc.episodeConfig) {
-    const eps = await searchEpisodesFts(query, groupIds, qLimit);
-    out.episodes = eps;
+    out.episodes = await searchEpisodesFts(query, groupIds, qLimit, asOf);
   }
 
   return out;

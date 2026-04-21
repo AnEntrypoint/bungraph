@@ -8,6 +8,9 @@ import {
   normalizeExact,
 } from './dedup-helpers.js';
 import { MAX_SUMMARY_CHARS, truncateAtSentence } from './text-utils.js';
+import { logger } from './logger.js';
+
+const log = logger.child('node-ops');
 
 export const NODE_DEDUP_CANDIDATE_LIMIT = 15;
 export const NODE_DEDUP_COSINE_MIN_SCORE = 0.6;
@@ -49,9 +52,14 @@ export async function extractNodes({ episode, previousEpisodes = [], entityTypes
 
   let res;
   try { res = await llm.generate(prompt.system, prompt.user); }
-  catch { res = { extracted_entities: [] }; }
+  catch (err) {
+    log.warn('llm extraction failed', { err: err.message, content: episode.content.slice(0, 100) });
+    res = { extracted_entities: [] };
+  }
   const raw = Array.isArray(res?.extracted_entities) ? res.extracted_entities
     : Array.isArray(res?.entities) ? res.entities : [];
+
+  log.debug('llm response parsed', { rawCount: raw.length, fullResponse: JSON.stringify(res).slice(0, 200) });
 
   const nodes = [];
   for (const e of raw) {
@@ -67,6 +75,8 @@ export async function extractNodes({ episode, previousEpisodes = [], entityTypes
       name_embedding: null, created_at: nowIso(),
     });
   }
+
+  log.debug('nodes extracted', { count: nodes.length, content: episode.content.slice(0, 100) });
   return collapseExactDuplicateExtractedNodes(nodes);
 }
 

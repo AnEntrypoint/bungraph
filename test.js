@@ -144,5 +144,16 @@ const mmrNodes = await g.search('Alice', { config: NODE_HYBRID_SEARCH_MMR, limit
 assert.ok(mmrNodes.nodes.length >= 1);
 
 try { await getLLM().close(); } catch {}
+
+if (process.env.BUNGRAPH_ACP_COMMAND) {
+  console.log('[test] ACP provider round-trip');
+  process.env.BUNGRAPH_LLM_PROVIDER = 'acp';
+  const { ACPClient } = await import('./src/llm-acp.js');
+  const acp = new ACPClient();
+  const r = await acp.generate('Return JSON only.', 'Return {"ok":true}', { timeoutMs: 90000 });
+  assert.equal(r.ok, true);
+  await acp.close();
+}
+
 console.log('[test] OK (full)');
 process.exit(0);

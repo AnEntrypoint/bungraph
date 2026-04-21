@@ -2,17 +2,11 @@ import { spawn, spawnSync } from 'child_process';
 import { existsSync } from 'fs';
 import { logger } from './logger.js';
 import { register } from './debug-registry.js';
+import { LLMError, LLMTransientError, LLMTimeoutError, LLMProcessError, LLMValidationError, LLMAbortError, isTransient } from './llm-errors.js';
+import { ACPClient } from './llm-acp.js';
+export { LLMError, LLMTransientError, LLMTimeoutError, LLMProcessError, LLMValidationError, LLMAbortError, isTransient };
 
 const log = logger.child('llm');
-
-export class LLMError extends Error { constructor(msg, cause) { super(msg); this.name = this.constructor.name; this.cause = cause; } }
-export class LLMTransientError extends LLMError {}
-export class LLMTimeoutError extends LLMTransientError {}
-export class LLMProcessError extends LLMError {}
-export class LLMValidationError extends LLMError {}
-export class LLMAbortError extends LLMError {}
-
-export function isTransient(e) { return e instanceof LLMTransientError; }
 
 let clientSingleton = null;
 let resolvedBin = null;
@@ -191,7 +185,13 @@ export class LLMClient {
 }
 
 export function getLLM() {
-  if (!clientSingleton) clientSingleton = new LLMClient();
+  if (clientSingleton) return clientSingleton;
+  const provider = (process.env.BUNGRAPH_LLM_PROVIDER || 'claude-code').toLowerCase();
+  if (provider === 'acp') {
+    clientSingleton = new ACPClient();
+  } else {
+    clientSingleton = new LLMClient();
+  }
   return clientSingleton;
 }
 

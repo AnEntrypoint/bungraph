@@ -4,7 +4,7 @@ Turnkey temporal context graph on libsql for AI agents. A 1:1 JavaScript port of
 
 - **libsql** — single-file embedded graph + vector (F32_BLOB + `vector_top_k`) + FTS5 keyword search. Zero external servers.
 - **Local embeddings** — `Xenova/all-MiniLM-L6-v2` (384d) via transformers.js. No API keys.
-- **LLM via Claude Code CLI** — entity/edge extraction, dedupe, temporal resolution, community summaries, saga summaries, and cross-encoder reranking driven through your locally-installed `claude` CLI (non-interactive `claude -p`). Uses whatever Claude Code is configured with locally. **No env vars required** — bungraph passes nothing to `claude`; it just runs your default configuration.
+- **Pluggable LLM** — default uses your local `claude` CLI (`claude -p`). Set `BUNGRAPH_LLM_PROVIDER=acp` + `BUNGRAPH_ACP_COMMAND="opencode acp"` (or any Agent Client Protocol agent: kilo, gemini-cli, custom) to route all extraction/dedupe/summary calls through an ACP stdio subprocess via `@agentclientprotocol/sdk`. Long-lived session, mutex-serialized turns, auto-allow permissions, JSON output parsed from streamed `agent_message_chunk` text.
 
 ## Quick start
 
@@ -67,6 +67,10 @@ Transaction safety: every multi-statement upsert runs through `withTx` with BEGI
 | `BUNGRAPH_LLM_TIMEOUT_MS` | 60000 | per-call timeout |
 | `BUNGRAPH_LLM_BACKOFF_CAP_MS` | 20000 | max backoff between retries |
 | `BUNGRAPH_CLAUDE_BIN` | auto-detect | override path to `claude` binary |
+| `BUNGRAPH_LLM_PROVIDER` | `claude-code` | `claude-code` or `acp` |
+| `BUNGRAPH_ACP_COMMAND` | — | ACP agent stdio command, e.g. `opencode acp`, `kilo acp`, `gemini acp` |
+| `BUNGRAPH_ACP_ARGS` | — | extra args (JSON array or space-separated) appended to command |
+| `BUNGRAPH_DEBUG_ACP` | off | log ACP subprocess stderr |
 | `BUNGRAPH_STUB_EMBEDDINGS` | off | stub deterministic vectors for offline tests |
 | `BUNDAG_SKIP_LLM` | off | skip LLM-dependent branches of `test.js` |
 

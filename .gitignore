@@ -16,3 +16,4 @@ dist/
 .plugkit-browser-profile/
 .gm/
 .acp-test*.db*
+.claude/

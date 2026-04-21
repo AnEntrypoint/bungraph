@@ -106,6 +106,7 @@ export class LLMClient {
         finished = true;
         try { ctrl.abort(); } catch {}
         try { proc.kill('SIGKILL'); } catch {}
+        cleanup();
         reject(new LLMTimeoutError(`claude -p timed out after ${timeoutMs}ms. stderr: ${stderr.slice(0, 500)}`));
       }, timeoutMs);
       const extOnAbort = () => {
@@ -153,8 +154,16 @@ export class LLMClient {
         } catch { resolve(stdout); }
       });
 
-      proc.stdin.write(prompt);
-      proc.stdin.end();
+      try {
+        proc.stdin.write(prompt);
+        proc.stdin.end();
+      } catch (e) {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        try { proc.kill('SIGKILL'); } catch {}
+        reject(new LLMProcessError(`stdin write failed: ${e.message}`, e));
+      }
     });
   }
 

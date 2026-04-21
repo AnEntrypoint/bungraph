@@ -1,0 +1,18 @@
+id: mcp-tools
+groups:
+  - label: ingestion
+    tools: [add_episode, add_episode_bulk, add_triplet]
+  - label: search
+    tools: [search, search_nodes, search_facts, search_communities, search_episodes]
+    note: all accept as_of for bitemporal queries
+  - label: retrieval
+    tools: [get_episodes, get_node, get_edge, get_episode]
+  - label: communities
+    tools: [build_communities, remove_communities]
+  - label: sagas
+    tools: [create_saga, summarize_saga]
+  - label: mutation
+    tools: [delete_episode, delete_entity_edge, delete_entity_node, clear_graph]
+  - label: observability
+    tools: [debug_state]
+    note: returns in-process subsystem snapshot

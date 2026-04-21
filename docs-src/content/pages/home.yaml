@@ -1,0 +1,31 @@
+id: home
+slug: home
+title: bungraph
+tagline: turnkey temporal context graph on libsql. no api keys, no external servers. one bunx command.
+install: bunx bungraph
+receipt:
+  - [status, live]
+  - [version, 0.1.26]
+  - [license, Apache-2.0]
+  - [runtime, node 18+ / bun]
+  - [graph db, libsql single file]
+  - [llm, local claude cli (no keys)]
+  - [embeddings, transformers.js local (offline)]
+  - [deps, 8 runtime]
+modes:
+  - name: mcp
+    cmd: bunx bungraph
+    blurb: stdio mcp server — claude code, cursor, ide plugins
+  - name: http
+    cmd: bunx bungraph --serve --port 8000
+    blurb: rest server with graphiti upstream parity
+  - name: cli
+    cmd: bunx bungraph add "fact..." --source text
+    blurb: one-shot ingestion and search
+features:
+  - extraction — llm extracts entities + fact triples per episode
+  - bitemporal — every edge carries valid_at + expired_at; search accepts as_of
+  - hybrid search — vector_top_k (F32 cosine) + FTS5 BM25 via RRF
+  - rerankers — rrf, mmr, node_distance, episode_mentions, cross_encoder
+  - transactions — BEGIN IMMEDIATE + writer mutex + jittered SQLITE_BUSY retry
+  - zero deps on cloud services

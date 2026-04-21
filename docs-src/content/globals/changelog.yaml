@@ -1,0 +1,14 @@
+id: changelog
+entries:
+  - date: 2026.04.21
+    ver: v0.1.27
+    msg: plug subprocess handle leak (extSignal listener on timeout); validated 10/10 epochs
+  - date: 2026.04.20
+    ver: v0.1.26
+    msg: windows handle exhaustion — RESTART checkpoint with 1s cleanup between epochs
+  - date: 2026.04.19
+    ver: v0.1.25
+    msg: libsql pragmas, partial indexes, subprocess hardening, lru single-flight embeddings
+  - date: 2026.04.18
+    ver: v0.1.16
+    msg: bitemporal search (as_of), withTx + writer mutex, structured logging, zod validation

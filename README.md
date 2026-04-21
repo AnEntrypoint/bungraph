@@ -1,5 +1,7 @@
 # bungraph
 
+**Docs:** https://anentrypoint.github.io/bungraph/
+
 Turnkey temporal context graph on libsql for AI agents. A 1:1 JavaScript port of [Graphiti](https://github.com/getzep/graphiti) built on:
 
 - **libsql** — single-file embedded graph + vector (F32_BLOB + `vector_top_k`) + FTS5 keyword search. Zero external servers.
@@ -106,6 +108,18 @@ Combines `vector_top_k` (F32 cosine) + FTS5 (BM25) via Reciprocal Rank Fusion. R
 | Embeddings | OpenAI / Voyage / Gemini / HF | transformers.js local (offline) |
 | Cross-encoder | OpenAI / BGE / Gemini | local `claude -p` |
 | Runtime | Python 3.10+ | bun / node 18+ |
+
+## Docs site
+
+The site at https://anentrypoint.github.io/bungraph/ is built by GitHub Actions from `docs-src/` on every push to `main`. It uses [flatspace](https://www.npmjs.com/package/flatspace) as the build tool, the 247420 design system for styling (`docs-src/theme/assets/`), and vendors webjsx + rippleui locally — no CDN, no external network at runtime.
+
+To build locally:
+
+```bash
+npx flatspace build      # reads flatspace.config.mjs, writes docs/
+```
+
+Content lives in `docs-src/content/` as YAML. The theme is in `docs-src/theme/`.
 
 ## License
 

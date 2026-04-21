@@ -1,0 +1,10 @@
+id: architecture
+rows:
+  - [aspect, graphiti (python), bungraph]
+  - [graph db, "neo4j / kuzu / falkordb / neptune", libsql (single file)]
+  - [vector, provider-specific, libsql F32_BLOB + vector_top_k]
+  - [keyword, "provider-specific (lucene/fts)", libsql FTS5]
+  - [llm, "openai / anthropic / gemini / groq sdks", local claude -p (no keys)]
+  - [embeddings, "openai / voyage / gemini / hf", transformers.js local (offline)]
+  - [cross-encoder, "openai / bge / gemini", local claude -p]
+  - [runtime, python 3.10+, "bun / node 18+"]

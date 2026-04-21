@@ -17,3 +17,5 @@ dist/
 .gm/
 .acp-test*.db*
 .claude/
+
+docs/

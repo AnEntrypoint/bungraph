@@ -1,6 +1,6 @@
 {
   "name": "bungraph",
-  "version": "0.1.27",
+  "version": "0.1.28",
   "description": "Turnkey temporal context graph (Graphiti 1:1 port) on libsql. Uses your local Claude Code CLI — no API keys. Single bunx command. MCP + HTTP + CLI.",
   "type": "module",
   "bin": {

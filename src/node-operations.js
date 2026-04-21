@@ -11,9 +11,6 @@ import { MAX_SUMMARY_CHARS, truncateAtSentence } from './text-utils.js';
 import { logger } from './logger.js';
 
 const log = logger.child('node-ops');
-import { logger } from './logger.js';
-
-const log = logger.child('node-ops');
 
 export const NODE_DEDUP_CANDIDATE_LIMIT = 15;
 export const NODE_DEDUP_COSINE_MIN_SCORE = 0.6;

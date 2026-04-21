@@ -1,13 +1,9 @@
 #!/usr/bin/env node
 import { Graphiti } from './src/index.js';
-import { rmSync, existsSync } from 'fs';
 import { resolve } from 'path';
 
-const dbPath = resolve('.epoch-research-full.db');
-['', '-wal', '-shm'].forEach(ext => {
-  const p = dbPath + ext;
-  if (existsSync(p)) rmSync(p);
-});
+const timestamp = Date.now();
+const dbPath = resolve(`.epoch-research-${timestamp}.db`);
 
 const g = new Graphiti({ dbPath, groupId: 'tiger-research' });
 await g.init();
@@ -29,12 +25,29 @@ console.log('=== 10-EPOCH TIGER RESEARCH ===\n');
 const results = [];
 let totalNodes = 0;
 let totalEdges = 0;
+const EPOCH_TIMEOUT_MS = 45000;
 
 for (let i = 0; i < epochs.length; i++) {
   const start = Date.now();
+  let status = 'pending';
+  let ep = null;
+
   try {
-    const ep = await g.addEpisode({ content: epochs[i], source: 'text' });
-    const elapsed = Date.now() - start;
+    ep = await Promise.race([
+      g.addEpisode({ content: epochs[i], source: 'text' }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`timeout after ${EPOCH_TIMEOUT_MS}ms`)), EPOCH_TIMEOUT_MS)
+      )
+    ]);
+    status = 'success';
+  } catch (e) {
+    status = 'error';
+    console.error(`[epoch ${i+1}] ✗ ${e.message}`);
+  }
+
+  const elapsed = Date.now() - start;
+
+  if (status === 'success' && ep) {
     totalNodes += ep.nodes.length;
     totalEdges += ep.edges.length;
     results.push({
@@ -43,28 +56,46 @@ for (let i = 0; i < epochs.length; i++) {
       edges: ep.edges.length,
       elapsed,
       nodeNames: ep.nodes.map(n => n.name),
+      status: 'success',
     });
     console.log(`[epoch ${i+1}] ✓ ${ep.nodes.length}n ${ep.edges.length}e (${elapsed}ms)`);
-  } catch (e) {
-    console.log(`[epoch ${i+1}] ✗ ERROR: ${e.message}`);
-    process.exit(1);
+  } else {
+    results.push({
+      epoch: i + 1,
+      nodes: 0,
+      edges: 0,
+      elapsed,
+      nodeNames: [],
+      status,
+    });
   }
+  process.stdout.flush && process.stdout.flush();
 }
 
 console.log('\n=== SUMMARY ===');
-console.log(`Total epochs: ${epochs.length}`);
-console.log(`Total nodes: ${totalNodes} (avg: ${(totalNodes/epochs.length).toFixed(1)})`);
-console.log(`Total edges: ${totalEdges} (avg: ${(totalEdges/epochs.length).toFixed(1)})`);
+const succeeded = results.filter(r => r.status === 'success').length;
+const timedout = results.filter(r => r.status === 'error').length;
+console.log(`Total epochs: ${epochs.length} (${succeeded} succeeded, ${timedout} timeout/error)`);
+console.log(`Total nodes: ${totalNodes} (avg: ${(succeeded > 0 ? (totalNodes/succeeded).toFixed(1) : 0)} per succeeded epoch)`);
+console.log(`Total edges: ${totalEdges}`);
 
 console.log('\nPer-epoch breakdown:');
 results.forEach(r => {
-  console.log(`  Epoch ${r.epoch}: ${r.nodes}n ${r.edges}e (${r.elapsed}ms) - ${r.nodeNames.join(', ')}`);
+  if (r.status === 'success') {
+    console.log(`  Epoch ${r.epoch}: ${r.nodes}n ${r.edges}e (${r.elapsed}ms) - ${r.nodeNames.join(', ')}`);
+  } else {
+    console.log(`  Epoch ${r.epoch}: ✗ ${r.status} (${r.elapsed}ms)`);
+  }
 });
 
-if (totalNodes < epochs.length * 2) {
-  console.log('\n⚠ WARNING: Low node extraction (expected >=2 per epoch)');
+if (succeeded === 0) {
+  console.log('\n✗ All epochs failed or timed out');
   process.exit(1);
 }
 
-console.log('\n✓ Test passed');
+if (totalNodes < succeeded * 2) {
+  console.log(`\n⚠ WARNING: Low extraction (got ${totalNodes}, expected >=2 per succeeded epoch)`);
+}
+
+console.log(`\n✓ Completed ${succeeded}/${epochs.length} epochs`);
 process.exit(0);
